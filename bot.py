@@ -1,97 +1,69 @@
-import os
 import discord
 from discord.ext import commands
+from collections import Counter
+import datetime
 from dotenv import load_dotenv
-from datetime import datetime
-import asyncio
+import os
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
-TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Set up Discord Intents
+# Bot setup
 intents = discord.Intents.default()
+intents.messages = True
 intents.message_content = True
 intents.reactions = True
-intents.messages = True
+intents.guilds = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
-
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f'Bot is online as {bot.user} (ID: {bot.user.id})')
-    print('Ready to receive commands!')
+    print(f"Logged in as {bot.user}")
 
+async def get_top_reacted_messages(guild: discord.Guild, year: int):
+    message_reactions = []
+    current_year = datetime.datetime.now().year
 
-def chunk_message(message, chunk_size=2000):
-    """Splits a message into chunks fitted under a certain character size."""
-    return [message[i:i + chunk_size] for i in range(0, len(message), chunk_size)]
+    if year > current_year:
+        raise ValueError("Year cannot be in the future.")
 
+    for channel in guild.text_channels:
+        try:
+            async for message in channel.history(limit=None, after=datetime.datetime(year, 1, 1), before=datetime.datetime(year + 1, 1, 1)):
+                total_reactions = sum(reaction.count for reaction in message.reactions)
+                message_reactions.append((message, total_reactions))
+        except (discord.Forbidden, discord.HTTPException):
+            continue
 
-@bot.command(name='topreactions')
-async def top_reactions(ctx):
-    this_year_start = datetime(datetime.now().year, 1, 1)
-    messages_with_reactions = []
+    # Sort messages by total reactions
+    sorted_messages = sorted(message_reactions, key=lambda x: x[1], reverse=True)
+    return sorted_messages[:25]
 
-    # Define emojis using Unicode representation for standard emojis and name for custom emojis
-    target_emojis = {"😂", ":cryinglaughing:", ":HOF:"}
+@bot.command()
+async def top_messages(ctx, year: int = datetime.datetime.now().year):
+    """Ranks the top 25 most reacted messages in the server for the given year."""
+    try:
+        top_messages = await get_top_reacted_messages(ctx.guild, year)
+        if not top_messages:
+            await ctx.send(f"No messages found with reactions for {year}.")
+            return
 
-    # Process the first two categories in the server
-    categories_to_check = ctx.guild.categories[:2]  # Limits to the first two categories
+        embed = discord.Embed(title=f"Top 25 Most Reacted Messages in {year}", color=discord.Color.blue())
 
-    for category in categories_to_check:
-        for channel in category.text_channels:
-            permissions = channel.permissions_for(ctx.me)
-            if permissions.read_message_history:
-                try:
-                    print(f"Processing channel '{channel.name}' in category '{category.name}'")
-                    async for message in channel.history(limit=None, after=this_year_start):
-                        emoji_counts = {emoji: 0 for emoji in target_emojis}
-                        total_reactions = 0
+        for rank, (message, reactions) in enumerate(top_messages, start=1):
+            content_preview = message.content[:50] + ('...' if len(message.content) > 50 else '')
+            embed.add_field(
+                name=f"#{rank} - {reactions} Reactions",
+                value=f"[Jump to Message]({message.jump_url})\nContent: {content_preview}",
+                inline=False
+            )
 
-                        for reaction in message.reactions:
-                            emoji_key = str(reaction.emoji)
-                            if isinstance(reaction.emoji, (discord.PartialEmoji, discord.Emoji)):
-                                emoji_key = f":{reaction.emoji.name}:"
-                            
-                            if emoji_key in target_emojis:
-                                emoji_counts[emoji_key] += reaction.count
-                                total_reactions += reaction.count
+        await ctx.send(embed=embed)
+    except ValueError as e:
+        await ctx.send(str(e))
+    except discord.Forbidden:
+        await ctx.send("I don't have permission to access some channels in this server.")
 
-                        if total_reactions > 0:
-                            messages_with_reactions.append((message, total_reactions, emoji_counts))
-
-                    # Add a slight delay to adhere to rate limits
-                    await asyncio.sleep(0.5)
-
-                except discord.errors.Forbidden:
-                    print(f"Permission denied for channel '{channel.name}', despite checks. Skipping channel.")
-                    continue
-            else:
-                print(f"Skipping channel '{channel.name}' as Read Message History permission is False.")
-
-    messages_with_reactions.sort(key=lambda msg: msg[1], reverse=True)
-
-    top_25 = messages_with_reactions[:25]
-    if not top_25:
-        await ctx.send("No messages with reactions found this year in the first two sections.")
-        return
-
-    response_lines = ["Top 25 Messages with Reactions from this Year Across First Two Categories:"]
-    for index, (message, count, emoji_counts) in enumerate(top_25, start=1):
-        author = message.author
-        emoji_details = ', '.join([f"{emoji}: {cnt}" for emoji, cnt in emoji_counts.items() if cnt > 0])
-        response_lines.append(
-            f"#{index} - User: {author.display_name}\n"
-            f"Message: \"{message.content[:50]}...\"\n"
-            f"Reactions: {emoji_details} [Link](https://discordapp.com/channels/{ctx.guild.id}/{message.channel.id}/{message.id})\n"
-        )
-
-    response = '\n\n'.join(response_lines)
-
-    for chunk in chunk_message(response):
-        await ctx.send(chunk)
-
-
-bot.run(TOKEN)
+bot.run(BOT_TOKEN)
